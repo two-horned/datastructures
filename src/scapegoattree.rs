@@ -233,10 +233,7 @@ struct Vine<K, V, A: Allocator> {
 impl<K, V, A: Allocator> From<Vine<K, V, A>> for Box<BinaryTree<K, V, A>, A> {
     fn from(vine: Vine<K, V, A>) -> Self {
         let mut root = vine.head;
-        let mut n = {
-            let m = vine.size;
-            m ^ (m & 1) ^ 1
-        };
+        let mut n = vine.size;
         let trimmed = 1 << n.ilog2();
         let uc = 1 + n - trimmed;
         if uc != trimmed {
@@ -252,9 +249,11 @@ impl<K, V, A: Allocator> From<Vine<K, V, A>> for Box<BinaryTree<K, V, A>, A> {
                         cur.right = right.left.take();
                         right.left = Some(cur);
                         cur = right;
+                        i += 2;
+                    } else {
+                        cur.right = Some(right);
                         i += 1;
                     }
-                    i += 1;
                     let next = par.right.insert(cur);
                     par = next;
                     continue;
