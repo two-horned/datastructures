@@ -420,38 +420,36 @@ where
     V: fmt::Display,
     A: Allocator,
 {
-    fn fmt_pretty(&self, f: &mut fmt::Formatter<'_>, prefix: &str, is_last: bool) -> fmt::Result {
-        if !prefix.is_empty() {
-            writeln!(
-                f,
-                "{}{}{}:{}",
-                prefix,
-                if is_last { "└── " } else { "├── " },
-                self.key,
-                self.value
-            )?;
-        } else {
-            writeln!(f, "{}:{}", self.key, self.value)?;
+    fn fmt_pretty(
+        &self,
+        f: &mut fmt::Formatter<'_>,
+        mut prefix: String,
+        is_left: bool,
+    ) -> fmt::Result {
+        if is_left {
+            prefix = prefix.replace("!", "ǀ");
         }
-
-        let next_prefix = if prefix.is_empty() {
-            String::from("")
+        if let Some(right) = &self.right {
+            right.fmt_pretty(f, prefix.clone() + "   !", false)?;
+        }
+        if prefix.len() == 0 {
+            writeln!(f, "{}:{}", self.key, self.value)?;
         } else {
-            format!("{}{}", prefix, if is_last { "    " } else { "│   " })
-        };
-
-        match (&self.left, &self.right) {
-            (Some(left), Some(right)) => {
-                left.fmt_pretty(f, &(next_prefix.clone() + "│   "), false)?;
-                right.fmt_pretty(f, &(next_prefix + "    "), true)?;
+            if is_left {
+                prefix = prefix.replace("|", " ");
+                writeln!(f, "{}`——— {}:{}", prefix, self.key, self.value)?;
+            } else {
+                writeln!(
+                    f,
+                    "{}.——— {}:{}",
+                    prefix.replace("!", " "),
+                    self.key,
+                    self.value
+                )?;
             }
-            (Some(left), None) => {
-                left.fmt_pretty(f, &(next_prefix + "    "), true)?;
-            }
-            (None, Some(right)) => {
-                right.fmt_pretty(f, &(next_prefix + "    "), true)?;
-            }
-            (None, None) => {}
+        }
+        if let Some(left) = &self.left {
+            left.fmt_pretty(f, prefix + "   |", true)?;
         }
 
         Ok(())
@@ -466,8 +464,9 @@ where
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if f.alternate() {
-            return self.fmt_pretty(f, "", true);
+            return self.fmt_pretty(f, String::from(""), false);
         }
+
         write!(f, "(")?;
         if let Some(left) = &self.left {
             write!(f, "{left} ← ")?;
@@ -507,7 +506,7 @@ where
         writeln!(f, "  max: {},", self.max)?;
         write!(f, "  tree: ")?;
         match &self.tree {
-            Some(tree) if f.alternate() => write!(f, "{tree:#}")?,
+            Some(tree) if f.alternate() => write!(f, "\n{tree:#}")?,
             Some(tree) => write!(f, "{tree}")?,
             None => write!(f, "∅")?,
         }
