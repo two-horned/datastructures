@@ -175,6 +175,14 @@ where
         Some((cur.key, cur.value))
     }
 
+    pub fn remove<Q: ?Sized>(&mut self, key: &Q) -> Option<V>
+    where
+        K: Borrow<Q>,
+        Q: Ord,
+    {
+        self.remove_entry(key).map(|(_, x)| x)
+    }
+
     pub fn remove_entry<Q: ?Sized>(&mut self, key: &Q) -> Option<(K, V)>
     where
         K: Borrow<Q>,
