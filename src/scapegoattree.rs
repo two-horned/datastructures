@@ -123,7 +123,7 @@ where
         // find scapegoat
         let (scapegoat, rest) = {
             let mut vine = Vine::from(leaf);
-            let mut old;
+            let mut old = 0;
             let mut new = 1;
             while let Some(mut tree) = cur {
                 match tree.key.cmp(&vine.head.key) {
@@ -139,7 +139,7 @@ where
                         vine = new_vine;
                     }
                 };
-                old = new;
+                old += new;
                 new = vine.size - old;
                 // found scapegoat
                 if old > (new << 1) {
