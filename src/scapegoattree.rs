@@ -509,6 +509,19 @@ where
     }
 }
 
+impl<K, V> FromIterator<(K, V)> for ScapeGoatTree<K, V>
+where
+    K: Ord,
+{
+    fn from_iter<T: IntoIterator<Item = (K, V)>>(iter: T) -> Self {
+        let mut tree = Self::new();
+        for (key, value) in iter {
+            tree.insert(key, value);
+        }
+        tree
+    }
+}
+
 impl<K, V, A> fmt::Debug for ScapeGoatTree<K, V, A>
 where
     K: fmt::Debug,
