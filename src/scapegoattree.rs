@@ -37,6 +37,20 @@ where
         self.len == 0
     }
 
+    pub fn clear(&mut self) {
+        self.tree = None;
+        self.len = 0;
+        self.max = 0;
+    }
+
+    pub fn contains_key<Q: ?Sized>(&self, key: &Q) -> bool
+    where
+        K: Borrow<Q> + Ord,
+        Q: Ord,
+    {
+        self.get(key).is_some()
+    }
+
     pub fn get<Q: ?Sized>(&self, key: &Q) -> Option<&V>
     where
         K: Borrow<Q>,
@@ -147,6 +161,22 @@ where
             self.max = self.len;
             self.tree = Some(Vine::from(x).into());
         }
+    }
+
+    pub fn first_key_value(&self) -> Option<(&K, &V)> {
+        let mut cur = self.tree.as_ref()?;
+        while let Some(left) = cur.left.as_ref() {
+            cur = left;
+        }
+        Some((&cur.key, &cur.value))
+    }
+
+    pub fn last_key_value(&self) -> Option<(&K, &V)> {
+        let mut cur = self.tree.as_ref()?;
+        while let Some(right) = cur.right.as_ref() {
+            cur = right;
+        }
+        Some((&cur.key, &cur.value))
     }
 
     pub fn pop_first(&mut self) -> Option<(K, V)> {
