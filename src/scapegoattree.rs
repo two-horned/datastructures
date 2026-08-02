@@ -405,15 +405,56 @@ where
     A: Allocator,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "(")?;
-        if let Some(left) = &self.left {
-            write!(f, "{:?} <- ", left)?;
+        f.debug_struct("BinaryTree")
+            .field("key", &self.key)
+            .field("value", &self.value)
+            .field("left", &self.left)
+            .field("right", &self.right)
+            .finish()
+    }
+}
+
+impl<K, V, A> BinaryTree<K, V, A>
+where
+    K: fmt::Display,
+    V: fmt::Display,
+    A: Allocator,
+{
+    fn fmt_pretty(&self, f: &mut fmt::Formatter<'_>, prefix: &str, is_last: bool) -> fmt::Result {
+        if !prefix.is_empty() {
+            writeln!(
+                f,
+                "{}{}{}:{}",
+                prefix,
+                if is_last { "└── " } else { "├── " },
+                self.key,
+                self.value
+            )?;
+        } else {
+            writeln!(f, "{}:{}", self.key, self.value)?;
         }
-        write!(f, "{:?}:{:?}", self.key, self.value)?;
-        if let Some(right) = &self.right {
-            write!(f, " -> {:?}", right)?;
+
+        let next_prefix = if prefix.is_empty() {
+            String::from("")
+        } else {
+            format!("{}{}", prefix, if is_last { "    " } else { "│   " })
+        };
+
+        match (&self.left, &self.right) {
+            (Some(left), Some(right)) => {
+                left.fmt_pretty(f, &(next_prefix.clone() + "│   "), false)?;
+                right.fmt_pretty(f, &(next_prefix + "    "), true)?;
+            }
+            (Some(left), None) => {
+                left.fmt_pretty(f, &(next_prefix + "    "), true)?;
+            }
+            (None, Some(right)) => {
+                right.fmt_pretty(f, &(next_prefix + "    "), true)?;
+            }
+            (None, None) => {}
         }
-        write!(f, ")")
+
+        Ok(())
     }
 }
 
@@ -424,13 +465,16 @@ where
     A: Allocator,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if f.alternate() {
+            return self.fmt_pretty(f, "", true);
+        }
         write!(f, "(")?;
         if let Some(left) = &self.left {
-            write!(f, "{left} <- ")?;
+            write!(f, "{left} ← ")?;
         }
         write!(f, "{}:{}", self.key, self.value)?;
         if let Some(right) = &self.right {
-            write!(f, " -> {right}")?;
+            write!(f, " → {right}")?;
         }
         write!(f, ")")
     }
@@ -443,16 +487,11 @@ where
     A: Allocator,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(f, "ScapeGoatTree {{")?;
-        writeln!(f, "  len: {},", self.len)?;
-        writeln!(f, "  max: {},", self.max)?;
-        write!(f, "  tree: ")?;
-        match &self.tree {
-            Some(tree) => write!(f, "{:?}", tree)?,
-            None => write!(f, "∅")?,
-        }
-        writeln!(f)?;
-        write!(f, "}}")
+        f.debug_struct("ScapeGoatTree")
+            .field("len", &self.len)
+            .field("max", &self.max)
+            .field("tree", &self.tree)
+            .finish()
     }
 }
 
@@ -468,6 +507,7 @@ where
         writeln!(f, "  max: {},", self.max)?;
         write!(f, "  tree: ")?;
         match &self.tree {
+            Some(tree) if f.alternate() => write!(f, "{tree:#}")?,
             Some(tree) => write!(f, "{tree}")?,
             None => write!(f, "∅")?,
         }
