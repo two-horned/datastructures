@@ -436,6 +436,26 @@ where
     }
 }
 
+impl<K, V, A> fmt::Debug for ScapeGoatTree<K, V, A>
+where
+    K: fmt::Debug,
+    V: fmt::Debug,
+    A: Allocator,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "ScapeGoatTree {{")?;
+        writeln!(f, "  len: {},", self.len)?;
+        writeln!(f, "  max: {},", self.max)?;
+        write!(f, "  tree: ")?;
+        match &self.tree {
+            Some(tree) => write!(f, "{:?}", tree)?,
+            None => write!(f, "∅")?,
+        }
+        writeln!(f)?;
+        write!(f, "}}")
+    }
+}
+
 impl<K, V, A> fmt::Display for ScapeGoatTree<K, V, A>
 where
     K: fmt::Display,
