@@ -38,7 +38,10 @@ where
     }
 
     pub fn clear(&mut self) {
-        self.tree.take().map(Vine::from);
+        let mut cur = self.tree.take().map(|x| Vine::from(x).head);
+        while let Some(tree) = cur.take() {
+            cur = tree.right;
+        }
         self.len = 0;
         self.max = 0;
     }
@@ -492,7 +495,10 @@ where
 
 impl<K, V, A: Allocator> Drop for ScapeGoatTree<K, V, A> {
     fn drop(&mut self) {
-        self.tree.take().map(Vine::from);
+        let mut cur = self.tree.take().map(|x| Vine::from(x).head);
+        while let Some(tree) = cur.take() {
+            cur = tree.right;
+        }
     }
 }
 
