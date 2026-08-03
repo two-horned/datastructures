@@ -2,7 +2,7 @@ use core::alloc::Allocator;
 use core::borrow::Borrow;
 use core::cmp::{Ord, Ordering};
 use core::fmt;
-use std::alloc::Global;
+use std::alloc::{Global, Layout};
 
 impl<K, V> ScapeGoatTree<K, V> {
     pub fn new() -> Self {
@@ -38,7 +38,7 @@ where
     }
 
     pub fn clear(&mut self) {
-        self.tree = None;
+        self.tree.take().map(Vine::from);
         self.len = 0;
         self.max = 0;
     }
@@ -414,6 +414,10 @@ impl<K, V, A: Allocator> From<Vine<K, V, A>> for Box<BinaryTree<K, V, A>, A> {
     }
 }
 
+pub fn node_layout<K, V, A: Allocator>() -> Layout {
+    Layout::new::<BinaryTree<K, V, A>>()
+}
+
 struct BinaryTree<K, V, A: Allocator = Global> {
     key: K,
     value: V,
@@ -483,6 +487,12 @@ where
         }
 
         Ok(())
+    }
+}
+
+impl<K, V, A: Allocator> Drop for ScapeGoatTree<K, V, A> {
+    fn drop(&mut self) {
+        self.tree.take().map(Vine::from);
     }
 }
 
