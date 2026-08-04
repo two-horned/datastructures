@@ -428,6 +428,7 @@ pub fn node_layout<K, V, A: Allocator>() -> Layout {
     Layout::new::<BinaryTree<K, V, A>>()
 }
 
+#[derive(Debug)]
 struct BinaryTree<K, V, A: Allocator = Global> {
     key: K,
     value: V,
@@ -435,27 +436,12 @@ struct BinaryTree<K, V, A: Allocator = Global> {
     right: Option<Box<BinaryTree<K, V, A>, A>>,
 }
 
+#[derive(Debug)]
 pub struct ScapeGoatTreeMap<K, V, A: Allocator = Global> {
     tree: Option<Box<BinaryTree<K, V, A>, A>>,
     len: usize,
     max: usize,
     alloc: A,
-}
-
-impl<K, V, A> fmt::Debug for BinaryTree<K, V, A>
-where
-    K: fmt::Debug,
-    V: fmt::Debug,
-    A: Allocator,
-{
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("BinaryTree")
-            .field("key", &self.key)
-            .field("value", &self.value)
-            .field("left", &self.left)
-            .field("right", &self.right)
-            .finish()
-    }
 }
 
 impl<K, V, A> BinaryTree<K, V, A>
@@ -542,21 +528,6 @@ where
             tree.insert(key, value);
         }
         tree
-    }
-}
-
-impl<K, V, A> fmt::Debug for ScapeGoatTreeMap<K, V, A>
-where
-    K: fmt::Debug,
-    V: fmt::Debug,
-    A: Allocator,
-{
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ScapeGoatTree")
-            .field("len", &self.len)
-            .field("max", &self.max)
-            .field("tree", &self.tree)
-            .finish()
     }
 }
 
