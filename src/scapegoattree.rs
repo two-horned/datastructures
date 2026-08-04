@@ -4,7 +4,7 @@ use core::cmp::{Ord, Ordering};
 use core::fmt;
 use std::alloc::{Global, Layout};
 
-impl<K, V> ScapeGoatTree<K, V> {
+impl<K, V> ScapeGoatTreeMap<K, V> {
     pub fn new() -> Self {
         Self {
             tree: None,
@@ -15,7 +15,7 @@ impl<K, V> ScapeGoatTree<K, V> {
     }
 }
 
-impl<K, V, A> ScapeGoatTree<K, V, A>
+impl<K, V, A> ScapeGoatTreeMap<K, V, A>
 where
     K: Ord,
     A: Allocator,
@@ -122,35 +122,8 @@ where
         }
 
         // rebalance
-        let mut cur = reverse_path(self.tree.take(), &leaf.key);
-        // find scapegoat
-        let (scapegoat, rest) = {
-            let mut vine = Vine::from(leaf);
-            let mut old = 0;
-            let mut new = 1;
-            while let Some(mut tree) = cur {
-                match tree.key.cmp(&vine.head.key) {
-                    Ordering::Equal => unreachable!("Rebalancing requires insertion of a key."),
-                    Ordering::Greater => {
-                        cur = tree.left.take();
-                        vine.concat(Vine::from(tree));
-                    }
-                    Ordering::Less => {
-                        cur = tree.right.take();
-                        let mut new_vine = Vine::from(tree);
-                        new_vine.concat(vine);
-                        vine = new_vine;
-                    }
-                };
-                old += new;
-                new = vine.size - old;
-                // found scapegoat
-                if old > (new << 1) {
-                    break;
-                }
-            }
-            (Into::into(vine), cur)
-        };
+        let cur = reverse_path(self.tree.take(), &leaf.key);
+        let (scapegoat, rest) = find_scapegoat(leaf, cur);
         self.tree = Some(restore_path(scapegoat, rest));
         // end rebalance
         None
@@ -296,6 +269,40 @@ where
     cld
 }
 
+fn find_scapegoat<K: Ord, V, A: Allocator>(
+    leaf: Box<BinaryTree<K, V, A>, A>,
+    mut cur: Option<Box<BinaryTree<K, V, A>, A>>,
+) -> (
+    Box<BinaryTree<K, V, A>, A>,
+    Option<Box<BinaryTree<K, V, A>, A>>,
+) {
+    let mut vine = Vine::from(leaf);
+    let mut old = 0;
+    let mut new = 1;
+    while let Some(mut tree) = cur {
+        match tree.key.cmp(&vine.head.key) {
+            Ordering::Equal => unreachable!("Rebalancing requires insertion of a key."),
+            Ordering::Greater => {
+                cur = tree.left.take();
+                vine.concat(Vine::from(tree));
+            }
+            Ordering::Less => {
+                cur = tree.right.take();
+                let mut new_vine = Vine::from(tree);
+                new_vine.concat(vine);
+                vine = new_vine;
+            }
+        };
+        old += new;
+        new = vine.size - old;
+        // found scapegoat, i.e. |T_child| > 2/3 |T|
+        if old > (new << 1) {
+            break;
+        }
+    }
+    (Into::into(vine), cur)
+}
+
 fn restore_path<K: Ord, V, A: Allocator>(
     mut cld: Box<BinaryTree<K, V, A>, A>,
     mut cur: Option<Box<BinaryTree<K, V, A>, A>>,
@@ -365,7 +372,7 @@ impl<K, V, A: Allocator> From<Vine<K, V, A>> for Box<BinaryTree<K, V, A>, A> {
     fn from(vine: Vine<K, V, A>) -> Self {
         let mut root = vine.head;
         let mut n = vine.size;
-        let trimmed = 1 << n.ilog2();
+        let trimmed = n.isolate_highest_one();
         let uc = 1 + n - trimmed;
         if uc != trimmed {
             let mut i = 0;
@@ -428,7 +435,7 @@ struct BinaryTree<K, V, A: Allocator = Global> {
     right: Option<Box<BinaryTree<K, V, A>, A>>,
 }
 
-pub struct ScapeGoatTree<K, V, A: Allocator = Global> {
+pub struct ScapeGoatTreeMap<K, V, A: Allocator = Global> {
     tree: Option<Box<BinaryTree<K, V, A>, A>>,
     len: usize,
     max: usize,
@@ -493,7 +500,7 @@ where
     }
 }
 
-impl<K, V, A: Allocator> Drop for ScapeGoatTree<K, V, A> {
+impl<K, V, A: Allocator> Drop for ScapeGoatTreeMap<K, V, A> {
     fn drop(&mut self) {
         let mut cur = self.tree.take().map(|x| Vine::from(x).head);
         while let Some(tree) = cur.take() {
@@ -525,7 +532,7 @@ where
     }
 }
 
-impl<K, V> FromIterator<(K, V)> for ScapeGoatTree<K, V>
+impl<K, V> FromIterator<(K, V)> for ScapeGoatTreeMap<K, V>
 where
     K: Ord,
 {
@@ -538,7 +545,7 @@ where
     }
 }
 
-impl<K, V, A> fmt::Debug for ScapeGoatTree<K, V, A>
+impl<K, V, A> fmt::Debug for ScapeGoatTreeMap<K, V, A>
 where
     K: fmt::Debug,
     V: fmt::Debug,
@@ -553,7 +560,7 @@ where
     }
 }
 
-impl<K, V, A> fmt::Display for ScapeGoatTree<K, V, A>
+impl<K, V, A> fmt::Display for ScapeGoatTreeMap<K, V, A>
 where
     K: fmt::Display,
     V: fmt::Display,
