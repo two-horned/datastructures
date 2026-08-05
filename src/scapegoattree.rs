@@ -457,29 +457,26 @@ where
         is_left: bool,
     ) -> fmt::Result {
         if is_left {
-            prefix = prefix.replace("!", "ǀ");
+            prefix = prefix.replace("r", "⎹");
+        } else {
+            prefix = prefix.replace("l", "⎹");
         }
         if let Some(right) = &self.right {
-            right.fmt_pretty(f, prefix.clone() + "   !", false)?;
+            right.fmt_pretty(f, prefix.replace("r", " ") + "    r", false)?;
         }
         if prefix.len() == 0 {
             writeln!(f, "{}:{}", self.key, self.value)?;
         } else {
             if is_left {
-                prefix = prefix.replace("|", " ");
+                prefix = prefix.replace("l", " ");
                 writeln!(f, "{}`——— {}:{}", prefix, self.key, self.value)?;
             } else {
-                writeln!(
-                    f,
-                    "{}.——— {}:{}",
-                    prefix.replace("!", " "),
-                    self.key,
-                    self.value
-                )?;
+                let prefix_clone = prefix.replace("r", " ");
+                writeln!(f, "{}ˏ——— {}:{}", prefix_clone, self.key, self.value)?;
             }
         }
         if let Some(left) = &self.left {
-            left.fmt_pretty(f, prefix + "   |", true)?;
+            left.fmt_pretty(f, prefix + "    l", true)?;
         }
 
         Ok(())
