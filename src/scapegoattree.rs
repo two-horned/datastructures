@@ -1,8 +1,8 @@
-use core::alloc::Allocator;
+use core::alloc::{Allocator, Layout};
 use core::borrow::Borrow;
 use core::cmp::{Ord, Ordering};
 use core::fmt;
-use std::alloc::{Global, Layout};
+use std::alloc::Global;
 
 impl<K, V> ScapeGoatTreeMap<K, V> {
     pub fn new() -> Self {
@@ -105,7 +105,7 @@ where
         self.len += 1;
         self.max = usize::max(self.len, self.max);
         let leaf = Box::new_in(
-            BinaryTree {
+            Node {
                 key,
                 value,
                 left: None,
@@ -243,9 +243,9 @@ where
 }
 
 fn reverse_path<Q: ?Sized, K, V, A>(
-    mut cur: Option<Box<BinaryTree<K, V, A>, A>>,
+    mut cur: Option<Box<Node<K, V, A>, A>>,
     key: &Q,
-) -> Option<Box<BinaryTree<K, V, A>, A>>
+) -> Option<Box<Node<K, V, A>, A>>
 where
     K: Borrow<Q>,
     Q: Ord,
@@ -270,12 +270,9 @@ where
 }
 
 fn find_scapegoat<K: Ord, V, A: Allocator>(
-    leaf: Box<BinaryTree<K, V, A>, A>,
-    mut cur: Option<Box<BinaryTree<K, V, A>, A>>,
-) -> (
-    Box<BinaryTree<K, V, A>, A>,
-    Option<Box<BinaryTree<K, V, A>, A>>,
-) {
+    leaf: Box<Node<K, V, A>, A>,
+    mut cur: Option<Box<Node<K, V, A>, A>>,
+) -> (Box<Node<K, V, A>, A>, Option<Box<Node<K, V, A>, A>>) {
     let mut vine = Vine::from(leaf);
     let mut old = 0;
     let mut new = 1;
@@ -304,9 +301,9 @@ fn find_scapegoat<K: Ord, V, A: Allocator>(
 }
 
 fn restore_path<K: Ord, V, A: Allocator>(
-    mut cld: Box<BinaryTree<K, V, A>, A>,
-    mut cur: Option<Box<BinaryTree<K, V, A>, A>>,
-) -> Box<BinaryTree<K, V, A>, A> {
+    mut cld: Box<Node<K, V, A>, A>,
+    mut cur: Option<Box<Node<K, V, A>, A>>,
+) -> Box<Node<K, V, A>, A> {
     while let Some(mut tree) = cur {
         match tree.key.cmp(&cld.key) {
             Ordering::Equal => unreachable!("Binary tree has distinct keys."),
@@ -327,15 +324,15 @@ fn restore_path<K: Ord, V, A: Allocator>(
 impl<K, V, A: Allocator> Vine<K, V, A> {
     fn concat(&mut self, other: Self) {
         unsafe {
-            *self.tail.as_mut() = Some(other.head);
+            self.tail.write(Some(other.head));
         }
         self.tail = other.tail;
         self.size += other.size;
     }
 }
 
-impl<K, V, A: Allocator> From<Box<BinaryTree<K, V, A>, A>> for Vine<K, V, A> {
-    fn from(mut root: Box<BinaryTree<K, V, A>, A>) -> Self {
+impl<K, V, A: Allocator> From<Box<Node<K, V, A>, A>> for Vine<K, V, A> {
+    fn from(mut root: Box<Node<K, V, A>, A>) -> Self {
         while let Some(mut left) = root.left {
             root.left = left.right;
             left.right = Some(root);
@@ -363,12 +360,12 @@ impl<K, V, A: Allocator> From<Box<BinaryTree<K, V, A>, A>> for Vine<K, V, A> {
 }
 
 struct Vine<K, V, A: Allocator> {
-    head: Box<BinaryTree<K, V, A>, A>,
-    tail: core::ptr::NonNull<Option<Box<BinaryTree<K, V, A>, A>>>,
+    head: Box<Node<K, V, A>, A>,
+    tail: core::ptr::NonNull<Option<Box<Node<K, V, A>, A>>>,
     size: usize,
 }
 
-impl<K, V, A: Allocator> From<Vine<K, V, A>> for Box<BinaryTree<K, V, A>, A> {
+impl<K, V, A: Allocator> From<Vine<K, V, A>> for Box<Node<K, V, A>, A> {
     fn from(vine: Vine<K, V, A>) -> Self {
         let mut root = vine.head;
         let mut n = vine.size;
@@ -425,60 +422,61 @@ impl<K, V, A: Allocator> From<Vine<K, V, A>> for Box<BinaryTree<K, V, A>, A> {
 }
 
 pub fn node_layout<K, V, A: Allocator>() -> Layout {
-    Layout::new::<BinaryTree<K, V, A>>()
+    Layout::new::<Node<K, V, A>>()
 }
 
 #[derive(Debug)]
-struct BinaryTree<K, V, A: Allocator = Global> {
+struct Node<K, V, A: Allocator = Global> {
     key: K,
     value: V,
-    left: Option<Box<BinaryTree<K, V, A>, A>>,
-    right: Option<Box<BinaryTree<K, V, A>, A>>,
+    left: Option<Box<Node<K, V, A>, A>>,
+    right: Option<Box<Node<K, V, A>, A>>,
 }
 
 #[derive(Debug)]
 pub struct ScapeGoatTreeMap<K, V, A: Allocator = Global> {
-    tree: Option<Box<BinaryTree<K, V, A>, A>>,
+    tree: Option<Box<Node<K, V, A>, A>>,
     len: usize,
     max: usize,
     alloc: A,
 }
 
-impl<K, V, A> BinaryTree<K, V, A>
+impl<K, V, A> Node<K, V, A>
 where
     K: fmt::Display,
     V: fmt::Display,
     A: Allocator,
 {
-    fn fmt_pretty(
-        &self,
-        f: &mut fmt::Formatter<'_>,
-        mut prefix: String,
-        is_left: bool,
-    ) -> fmt::Result {
-        if is_left {
-            prefix = prefix.replace("r", "⎹");
-        } else {
-            prefix = prefix.replace("l", "⎹");
-        }
+    fn fmt_pretty(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if let Some(right) = &self.right {
-            right.fmt_pretty(f, prefix.replace("r", " ") + "    r", false)?;
+            right.fmt_pretty_right(f, String::from("   "))?;
         }
-        if prefix.len() == 0 {
-            writeln!(f, "{}:{}", self.key, self.value)?;
-        } else {
-            if is_left {
-                prefix = prefix.replace("l", " ");
-                writeln!(f, "{}`——— {}:{}", prefix, self.key, self.value)?;
-            } else {
-                let prefix_clone = prefix.replace("r", " ");
-                writeln!(f, "{}ˏ——— {}:{}", prefix_clone, self.key, self.value)?;
-            }
-        }
+        writeln!(f, "{}:{}", self.key, self.value)?;
         if let Some(left) = &self.left {
-            left.fmt_pretty(f, prefix + "    l", true)?;
+            left.fmt_pretty_left(f, String::from("   "))?;
         }
+        Ok(())
+    }
 
+    fn fmt_pretty_right(&self, f: &mut fmt::Formatter<'_>, prefix: String) -> fmt::Result {
+        if let Some(right) = &self.right {
+            right.fmt_pretty_right(f, prefix.clone() + "    ")?;
+        }
+        writeln!(f, "{} ˏ——— {}:{}", prefix, self.key, self.value)?;
+        if let Some(left) = &self.left {
+            left.fmt_pretty_left(f, prefix + "⎹   ")?;
+        }
+        Ok(())
+    }
+
+    fn fmt_pretty_left(&self, f: &mut fmt::Formatter<'_>, prefix: String) -> fmt::Result {
+        if let Some(right) = &self.right {
+            right.fmt_pretty_right(f, prefix.clone() + "⎹   ")?;
+        }
+        writeln!(f, "{} `——— {}:{}", prefix, self.key, self.value)?;
+        if let Some(left) = &self.left {
+            left.fmt_pretty_left(f, prefix + "    ")?;
+        }
         Ok(())
     }
 }
@@ -492,7 +490,7 @@ impl<K, V, A: Allocator> Drop for ScapeGoatTreeMap<K, V, A> {
     }
 }
 
-impl<K, V, A> fmt::Display for BinaryTree<K, V, A>
+impl<K, V, A> fmt::Display for Node<K, V, A>
 where
     K: fmt::Display,
     V: fmt::Display,
@@ -500,9 +498,8 @@ where
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if f.alternate() {
-            return self.fmt_pretty(f, String::from(""), false);
+            return self.fmt_pretty(f);
         }
-
         write!(f, "(")?;
         if let Some(left) = &self.left {
             write!(f, "{left} ← ")?;
@@ -535,16 +532,15 @@ where
     A: Allocator,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(f, "ScapeGoatTree {{")?;
-        writeln!(f, "  len: {},", self.len)?;
-        writeln!(f, "  max: {},", self.max)?;
-        write!(f, "  tree: ")?;
+        writeln!(
+            f,
+            "ScapeGoatTree {{\n  len: {}, max: {}\n   tree:",
+            self.len, self.max
+        )?;
         match &self.tree {
-            Some(tree) if f.alternate() => write!(f, "\n{tree:#}")?,
-            Some(tree) => write!(f, "{tree}")?,
-            None => write!(f, "∅")?,
+            Some(tree) => tree.fmt(f)?,
+            None => f.write_str("∅")?,
         }
-        writeln!(f)?;
-        write!(f, "}}")
+        write!(f, "\n}}")
     }
 }
