@@ -2,7 +2,8 @@ use core::alloc::{Allocator, Layout};
 use core::borrow::Borrow;
 use core::cmp::{Ord, Ordering};
 use core::fmt;
-use std::alloc::Global;
+use core::ptr::NonNull;
+use std::alloc::{Global, handle_alloc_error};
 
 impl<K, V> ScapeGoatTreeMap<K, V> {
     pub fn new() -> Self {
@@ -39,8 +40,9 @@ where
 
     pub fn clear(&mut self) {
         let mut cur = self.tree.take().map(|x| Vine::from(x).head);
-        while let Some(tree) = cur.take() {
-            cur = tree.right;
+        while let Some(tree) = cur {
+            cur = unsafe { tree.read() }.right;
+            unsafe { self.alloc.deallocate(tree.cast(), node_layout::<K, V>()) };
         }
         self.len = 0;
         self.max = 0;
@@ -59,12 +61,12 @@ where
         K: Borrow<Q>,
         Q: Ord,
     {
-        let mut cur = self.tree.as_deref();
-        while let Some(tree) = cur {
+        let mut cur = self.tree.as_ref();
+        while let Some(tree) = cur.map(|ptr| unsafe { ptr.as_ref() }) {
             cur = match tree.key.borrow().cmp(key) {
                 Ordering::Equal => return Some(&tree.value),
-                Ordering::Greater => tree.left.as_deref(),
-                Ordering::Less => tree.right.as_deref(),
+                Ordering::Greater => tree.left.as_ref(),
+                Ordering::Less => tree.right.as_ref(),
             };
         }
         None
@@ -75,12 +77,12 @@ where
         K: Borrow<Q>,
         Q: Ord,
     {
-        let mut cur = self.tree.as_deref_mut();
-        while let Some(tree) = cur {
+        let mut cur = self.tree.as_mut();
+        while let Some(tree) = cur.map(|ptr| unsafe { ptr.as_mut() }) {
             cur = match tree.key.borrow().cmp(key) {
                 Ordering::Equal => return Some(&mut tree.value),
-                Ordering::Greater => tree.left.as_deref_mut(),
-                Ordering::Less => tree.right.as_deref_mut(),
+                Ordering::Greater => tree.left.as_mut(),
+                Ordering::Less => tree.right.as_mut(),
             };
         }
         None
@@ -93,7 +95,7 @@ where
     {
         let mut depth = 0;
         let mut cur = &mut self.tree;
-        while let Some(tree) = cur {
+        while let Some(tree) = cur.map(|mut ptr| unsafe { ptr.as_mut() }) {
             cur = match tree.key.borrow().cmp(&key) {
                 Ordering::Equal => return Some(core::mem::replace(&mut tree.value, value)),
                 Ordering::Greater => &mut tree.left,
@@ -104,15 +106,19 @@ where
 
         self.len += 1;
         self.max = usize::max(self.len, self.max);
-        let leaf = Box::new_in(
-            Node {
+        let leaf = self
+            .alloc
+            .allocate(node_layout::<K, V>())
+            .unwrap_or_else(|_| handle_alloc_error(node_layout::<K, V>()))
+            .cast();
+        unsafe {
+            leaf.write(Node {
                 key,
                 value,
                 left: None,
                 right: None,
-            },
-            self.alloc.clone(),
-        );
+            })
+        }
 
         const INV_LN_THREE_HALFS: f64 = 2.4663034623764317;
         let depth_max = (INV_LN_THREE_HALFS * (self.len as f64).ln()) as u32;
@@ -122,7 +128,7 @@ where
         }
 
         // rebalance
-        let cur = reverse_path(self.tree.take(), &leaf.key);
+        let cur = reverse_path(self.tree.take(), &unsafe { leaf.as_ref() }.key);
         let (scapegoat, rest) = find_scapegoat(leaf, cur);
         self.tree = Some(restore_path(scapegoat, rest));
         // end rebalance
@@ -140,17 +146,17 @@ where
     }
 
     pub fn first_key_value(&self) -> Option<(&K, &V)> {
-        let mut cur = self.tree.as_ref()?;
-        while let Some(left) = cur.left.as_ref() {
-            cur = left;
+        let mut cur = self.tree.map(|ptr| unsafe { ptr.as_ref() })?;
+        while let Some(left) = cur.left {
+            cur = unsafe { left.as_ref() };
         }
         Some((&cur.key, &cur.value))
     }
 
     pub fn last_key_value(&self) -> Option<(&K, &V)> {
-        let mut cur = self.tree.as_ref()?;
+        let mut cur = self.tree.map(|ptr| unsafe { ptr.as_ref() })?;
         while let Some(right) = cur.right.as_ref() {
-            cur = right;
+            cur = unsafe { right.as_ref() };
         }
         Some((&cur.key, &cur.value))
     }
@@ -158,11 +164,16 @@ where
     pub fn pop_first(&mut self) -> Option<(K, V)> {
         let mut cur = self.tree.take()?;
         let mut par = &mut self.tree;
-        while let Some(left) = cur.left.take() {
+        while let Some(left) = unsafe { cur.as_mut() }.left.take() {
             let next = par.insert(cur);
-            par = &mut next.left;
+            par = &mut unsafe { next.as_mut() }.left;
             cur = left;
         }
+        let cur = unsafe {
+            let tmp = cur.read();
+            self.alloc.deallocate(cur.cast(), node_layout::<K, V>());
+            tmp
+        };
         *par = cur.right;
         self.remove_rebuild();
         Some((cur.key, cur.value))
@@ -171,11 +182,16 @@ where
     pub fn pop_last(&mut self) -> Option<(K, V)> {
         let mut cur = self.tree.take()?;
         let mut par = &mut self.tree;
-        while let Some(right) = cur.right.take() {
+        while let Some(right) = unsafe { cur.as_mut() }.right.take() {
             let next = par.insert(cur);
-            par = &mut next.right;
+            par = &mut unsafe { next.as_mut() }.right;
             cur = right;
         }
+        let cur = unsafe {
+            let tmp = cur.read();
+            self.alloc.deallocate(cur.cast(), node_layout::<K, V>());
+            tmp
+        };
         *par = cur.left;
         self.remove_rebuild();
         Some((cur.key, cur.value))
@@ -197,28 +213,36 @@ where
         let mut cur = self.tree.take()?;
         let mut par = &mut self.tree;
         loop {
-            match cur.key.borrow().cmp(key) {
+            let cur_mut = unsafe { cur.as_mut() };
+            match cur_mut.key.borrow().cmp(key) {
                 Ordering::Equal => break,
                 Ordering::Greater => {
-                    let Some(left) = cur.left.take() else {
+                    let Some(left) = cur_mut.left.take() else {
                         *par = Some(cur);
                         return None;
                     };
                     let next = par.insert(cur);
-                    par = &mut next.left;
+                    let next_mut = unsafe { next.as_mut() };
+                    par = &mut next_mut.left;
                     cur = left;
                 }
                 Ordering::Less => {
-                    let Some(right) = cur.right.take() else {
+                    let Some(right) = cur_mut.right.take() else {
                         *par = Some(cur);
                         return None;
                     };
                     let next = par.insert(cur);
-                    par = &mut next.right;
+                    let next_mut = unsafe { next.as_mut() };
+                    par = &mut next_mut.right;
                     cur = right;
                 }
             }
         }
+        let mut cur = unsafe {
+            let tmp = cur.read();
+            self.alloc.deallocate(cur.cast(), node_layout::<K, V>());
+            tmp
+        };
         match (cur.left.take(), cur.right.take()) {
             (None, None) => {}
             (l @ Some(_), None) => *par = l,
@@ -226,14 +250,16 @@ where
             (l @ Some(_), Some(mut r_cur)) => {
                 let mut r = None;
                 let mut r_par = &mut r;
-                while let Some(left) = r_cur.left.take() {
+                while let Some(left) = unsafe { r_cur.as_mut() }.left.take() {
                     let next = r_par.insert(r_cur);
-                    r_par = &mut next.left;
+                    let next_mut = unsafe { next.as_mut() };
+                    r_par = &mut next_mut.left;
                     r_cur = left;
                 }
-                *r_par = r_cur.right;
-                r_cur.left = l;
-                r_cur.right = r;
+                let r_cur_mut = unsafe { r_cur.as_mut() };
+                *r_par = r_cur_mut.right;
+                r_cur_mut.left = l;
+                r_cur_mut.right = r;
                 *par = Some(r_cur);
             }
         }
@@ -242,26 +268,26 @@ where
     }
 }
 
-fn reverse_path<Q: ?Sized, K, V, A>(
-    mut cur: Option<Box<Node<K, V, A>, A>>,
+fn reverse_path<Q: ?Sized, K, V>(
+    mut cur: Option<NonNull<Node<K, V>>>,
     key: &Q,
-) -> Option<Box<Node<K, V, A>, A>>
+) -> Option<NonNull<Node<K, V>>>
 where
     K: Borrow<Q>,
     Q: Ord,
-    A: Allocator,
 {
     let mut cld = None;
     while let Some(mut tree) = cur {
-        match tree.key.borrow().cmp(&key) {
+        let tree_mut = unsafe { tree.as_mut() };
+        match tree_mut.key.borrow().cmp(&key) {
             Ordering::Equal => unreachable!("Binary tree has distinct keys."),
             Ordering::Greater => {
-                cur = tree.left;
-                tree.left = cld;
+                cur = tree_mut.left;
+                tree_mut.left = cld;
             }
             Ordering::Less => {
-                cur = tree.right;
-                tree.right = cld;
+                cur = tree_mut.right;
+                tree_mut.right = cld;
             }
         };
         cld = Some(tree);
@@ -269,22 +295,23 @@ where
     cld
 }
 
-fn find_scapegoat<K: Ord, V, A: Allocator>(
-    leaf: Box<Node<K, V, A>, A>,
-    mut cur: Option<Box<Node<K, V, A>, A>>,
-) -> (Box<Node<K, V, A>, A>, Option<Box<Node<K, V, A>, A>>) {
+fn find_scapegoat<K: Ord, V>(
+    leaf: NonNull<Node<K, V>>,
+    mut cur: Option<NonNull<Node<K, V>>>,
+) -> (NonNull<Node<K, V>>, Option<NonNull<Node<K, V>>>) {
     let mut vine = Vine::from(leaf);
     let mut old = 0;
     let mut new = 1;
     while let Some(mut tree) = cur {
-        match tree.key.cmp(&vine.head.key) {
-            Ordering::Equal => unreachable!("Rebalancing requires insertion of a key."),
+        let tree_mut = unsafe { tree.as_mut() };
+        match tree_mut.key.cmp(&unsafe { vine.head.as_ref() }.key) {
+            Ordering::Equal => unreachable!("Binary tree has distinct keys."),
             Ordering::Greater => {
-                cur = tree.left.take();
+                cur = tree_mut.left.take();
                 vine.concat(Vine::from(tree));
             }
             Ordering::Less => {
-                cur = tree.right.take();
+                cur = tree_mut.right.take();
                 let mut new_vine = Vine::from(tree);
                 new_vine.concat(vine);
                 vine = new_vine;
@@ -300,20 +327,22 @@ fn find_scapegoat<K: Ord, V, A: Allocator>(
     (Into::into(vine), cur)
 }
 
-fn restore_path<K: Ord, V, A: Allocator>(
-    mut cld: Box<Node<K, V, A>, A>,
-    mut cur: Option<Box<Node<K, V, A>, A>>,
-) -> Box<Node<K, V, A>, A> {
+fn restore_path<K: Ord, V>(
+    mut cld: NonNull<Node<K, V>>,
+    mut cur: Option<NonNull<Node<K, V>>>,
+) -> NonNull<Node<K, V>> {
+    let key = unsafe { &cld.as_ref().key };
     while let Some(mut tree) = cur {
-        match tree.key.cmp(&cld.key) {
+        let tree_mut = unsafe { tree.as_mut() };
+        match tree_mut.key.cmp(key) {
             Ordering::Equal => unreachable!("Binary tree has distinct keys."),
             Ordering::Greater => {
-                cur = tree.left;
-                tree.left = Some(cld);
+                cur = tree_mut.left;
+                tree_mut.left = Some(cld);
             }
             Ordering::Less => {
-                cur = tree.right;
-                tree.right = Some(cld);
+                cur = tree_mut.right;
+                tree_mut.right = Some(cld);
             }
         }
         cld = tree;
@@ -321,7 +350,7 @@ fn restore_path<K: Ord, V, A: Allocator>(
     cld
 }
 
-impl<K, V, A: Allocator> Vine<K, V, A> {
+impl<K, V> Vine<K, V> {
     fn concat(&mut self, other: Self) {
         unsafe {
             self.tail.write(Some(other.head));
@@ -331,26 +360,31 @@ impl<K, V, A: Allocator> Vine<K, V, A> {
     }
 }
 
-impl<K, V, A: Allocator> From<Box<Node<K, V, A>, A>> for Vine<K, V, A> {
-    fn from(mut root: Box<Node<K, V, A>, A>) -> Self {
-        while let Some(mut left) = root.left {
-            root.left = left.right;
-            left.right = Some(root);
-            root = left;
+impl<K, V> From<NonNull<Node<K, V>>> for Vine<K, V> {
+    fn from(mut root: NonNull<Node<K, V>>) -> Self {
+        unsafe {
+            while let Some(mut left) = root.as_ref().left {
+                root.as_mut().left = left.as_ref().right;
+                left.as_mut().right = Some(root);
+                root = left;
+            }
         }
-        let mut par = &mut root.right;
+
+        let mut par = &mut unsafe { root.as_mut() }.right;
         let mut size = 1;
         while let Some(mut cur) = par.take() {
             size += 1;
-            while let Some(mut left) = cur.left {
-                cur.left = left.right;
-                left.right = Some(cur);
-                cur = left;
+            unsafe {
+                while let Some(mut left) = cur.as_ref().left {
+                    cur.as_mut().left = left.as_ref().right;
+                    left.as_mut().right = Some(cur);
+                    cur = left;
+                }
             }
             let next = par.insert(cur);
-            par = &mut next.right;
+            par = &mut unsafe { next.as_mut() }.right;
         }
-        let tail = core::ptr::NonNull::from(par);
+        let tail = NonNull::from(par);
         Vine {
             head: root,
             tail,
@@ -359,14 +393,8 @@ impl<K, V, A: Allocator> From<Box<Node<K, V, A>, A>> for Vine<K, V, A> {
     }
 }
 
-struct Vine<K, V, A: Allocator> {
-    head: Box<Node<K, V, A>, A>,
-    tail: core::ptr::NonNull<Option<Box<Node<K, V, A>, A>>>,
-    size: usize,
-}
-
-impl<K, V, A: Allocator> From<Vine<K, V, A>> for Box<Node<K, V, A>, A> {
-    fn from(vine: Vine<K, V, A>) -> Self {
+impl<K, V> From<Vine<K, V>> for NonNull<Node<K, V>> {
+    fn from(vine: Vine<K, V>) -> Self {
         let mut root = vine.head;
         let mut n = vine.size;
         let trimmed = n.isolate_highest_one();
@@ -376,23 +404,26 @@ impl<K, V, A: Allocator> From<Vine<K, V, A>> for Box<Node<K, V, A>, A> {
             let mut k = 1;
             let mut m = 0;
             let mut par = &mut root;
-            while let Some(mut cur) = par.right.take() {
-                let Some(mut right) = cur.right else {
-                    par.right = Some(cur);
+            while let Some(mut cur) = unsafe { par.as_mut().right }.take() {
+                let cur_mut = unsafe { cur.as_mut() };
+                let par_mut = unsafe { par.as_mut() };
+                let Some(mut right) = cur_mut.right else {
+                    par_mut.right = Some(cur);
                     break;
                 };
+                let right_mut = unsafe { right.as_mut() };
                 if i == m {
                     m = k * n / uc;
                     k += 1;
-                    cur.right = right.left;
-                    right.left = Some(cur);
+                    cur_mut.right = right_mut.left;
+                    right_mut.left = Some(cur);
                     cur = right;
                     i += 2;
                 } else {
-                    cur.right = Some(right);
+                    cur_mut.right = Some(right);
                     i += 1;
                 }
-                let next = par.right.insert(cur);
+                let next = par_mut.right.insert(cur);
                 par = next;
                 continue;
             }
@@ -400,19 +431,24 @@ impl<K, V, A: Allocator> From<Vine<K, V, A>> for Box<Node<K, V, A>, A> {
         }
         while n > 1 {
             root = {
-                let mut right = root.right.expect("n > 1");
-                root.right = right.left;
-                right.left = Some(root);
+                let root_mut = unsafe { root.as_mut() };
+                let mut right = root_mut.right.expect("n > 1");
+                let right_mut = unsafe { right.as_mut() };
+                root_mut.right = right_mut.left;
+                right_mut.left = Some(root);
                 right
             };
             let m = n >> 1;
             let mut par = &mut root;
             for _ in 1..m {
-                let mut cur = par.right.take().expect("i < m");
-                let mut right = cur.right.expect("i < m");
-                cur.right = right.left;
-                right.left = Some(cur);
-                let next = par.right.insert(right);
+                let par_mut = unsafe { par.as_mut() };
+                let mut cur = par_mut.right.take().expect("i < m");
+                let cur_mut = unsafe { cur.as_mut() };
+                let mut right = cur_mut.right.expect("i < m");
+                let right_mut = unsafe { right.as_mut() };
+                cur_mut.right = right_mut.left;
+                right_mut.left = Some(cur);
+                let next = par_mut.right.insert(right);
                 par = next;
             }
             n = m;
@@ -421,60 +457,64 @@ impl<K, V, A: Allocator> From<Vine<K, V, A>> for Box<Node<K, V, A>, A> {
     }
 }
 
-pub fn node_layout<K, V, A: Allocator>() -> Layout {
-    Layout::new::<Node<K, V, A>>()
+pub const fn node_layout<K, V>() -> Layout {
+    Layout::new::<Node<K, V>>()
 }
 
-#[derive(Debug)]
-struct Node<K, V, A: Allocator = Global> {
+struct Vine<K, V> {
+    head: NonNull<Node<K, V>>,
+    tail: NonNull<Option<NonNull<Node<K, V>>>>,
+    size: usize,
+}
+
+struct Node<K, V> {
     key: K,
     value: V,
-    left: Option<Box<Node<K, V, A>, A>>,
-    right: Option<Box<Node<K, V, A>, A>>,
+    left: Option<NonNull<Node<K, V>>>,
+    right: Option<NonNull<Node<K, V>>>,
 }
 
 #[derive(Debug)]
 pub struct ScapeGoatTreeMap<K, V, A: Allocator = Global> {
-    tree: Option<Box<Node<K, V, A>, A>>,
+    tree: Option<NonNull<Node<K, V>>>,
     len: usize,
     max: usize,
     alloc: A,
 }
 
-impl<K, V, A> Node<K, V, A>
+impl<K, V> Node<K, V>
 where
     K: fmt::Display,
     V: fmt::Display,
-    A: Allocator,
 {
     fn fmt_pretty(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if let Some(right) = &self.right {
+        if let Some(right) = self.right.map(|ptr| unsafe { ptr.as_ref() }) {
             right.fmt_pretty_right(f, String::from("   "))?;
         }
         writeln!(f, "{}:{}", self.key, self.value)?;
-        if let Some(left) = &self.left {
+        if let Some(left) = self.left.map(|ptr| unsafe { ptr.as_ref() }) {
             left.fmt_pretty_left(f, String::from("   "))?;
         }
         Ok(())
     }
 
     fn fmt_pretty_right(&self, f: &mut fmt::Formatter<'_>, prefix: String) -> fmt::Result {
-        if let Some(right) = &self.right {
+        if let Some(right) = self.right.map(|ptr| unsafe { ptr.as_ref() }) {
             right.fmt_pretty_right(f, prefix.clone() + "    ")?;
         }
         writeln!(f, "{} ˏ——— {}:{}", prefix, self.key, self.value)?;
-        if let Some(left) = &self.left {
+        if let Some(left) = self.left.map(|ptr| unsafe { ptr.as_ref() }) {
             left.fmt_pretty_left(f, prefix + "⎹   ")?;
         }
         Ok(())
     }
 
     fn fmt_pretty_left(&self, f: &mut fmt::Formatter<'_>, prefix: String) -> fmt::Result {
-        if let Some(right) = &self.right {
+        if let Some(right) = self.right.map(|ptr| unsafe { ptr.as_ref() }) {
             right.fmt_pretty_right(f, prefix.clone() + "⎹   ")?;
         }
         writeln!(f, "{} `——— {}:{}", prefix, self.key, self.value)?;
-        if let Some(left) = &self.left {
+        if let Some(left) = self.left.map(|ptr| unsafe { ptr.as_ref() }) {
             left.fmt_pretty_left(f, prefix + "    ")?;
         }
         Ok(())
@@ -484,28 +524,28 @@ where
 impl<K, V, A: Allocator> Drop for ScapeGoatTreeMap<K, V, A> {
     fn drop(&mut self) {
         let mut cur = self.tree.take().map(|x| Vine::from(x).head);
-        while let Some(tree) = cur.take() {
-            cur = tree.right;
+        while let Some(tree) = cur {
+            cur = unsafe { tree.read() }.right;
+            unsafe { self.alloc.deallocate(tree.cast(), node_layout::<K, V>()) };
         }
     }
 }
 
-impl<K, V, A> fmt::Display for Node<K, V, A>
+impl<K, V> fmt::Display for Node<K, V>
 where
     K: fmt::Display,
     V: fmt::Display,
-    A: Allocator,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if f.alternate() {
             return self.fmt_pretty(f);
         }
         write!(f, "(")?;
-        if let Some(left) = &self.left {
+        if let Some(left) = self.left.map(|ptr| unsafe { ptr.as_ref() }) {
             write!(f, "{left} ← ")?;
         }
         write!(f, "{}:{}", self.key, self.value)?;
-        if let Some(right) = &self.right {
+        if let Some(right) = self.right.map(|ptr| unsafe { ptr.as_ref() }) {
             write!(f, " → {right}")?;
         }
         write!(f, ")")
@@ -537,7 +577,7 @@ where
             "ScapeGoatTree {{\n  len: {}, max: {}\n   tree:",
             self.len, self.max
         )?;
-        match &self.tree {
+        match self.tree.map(|ptr| unsafe { ptr.as_ref() }) {
             Some(tree) => tree.fmt(f)?,
             None => f.write_str("∅")?,
         }
